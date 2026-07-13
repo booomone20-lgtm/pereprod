@@ -10,7 +10,7 @@ app = Flask(__name__)
 
 # ========== НАСТРОЙКИ ==========
 BOT_TOKEN = "8589215471:AAFV7jemD5gUeYvmQVynRxGSfBOylMOx3LA"
-CHANNEL_ID = "Cryyptoschool"
+CHANNEL_ID = "@Cryyptoschool"
 
 # Настройка логирования
 logging.basicConfig(level=logging.INFO)
