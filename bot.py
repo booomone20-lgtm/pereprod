@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 user_sessions = {}
 user_templates = {}
 scheduled_tasks = {}
-auto_posts = {}
+auto_posts = {}  # user_id: [{"type": "daily"/"once", "time": "HH:MM" или "YYYY-MM-DD HH:MM", "text": "...", "active": True}]
 
 # ========== ФУНКЦИИ ДЛЯ РАБОТЫ С TELEGRAM ==========
 def send_telegram(method, params):
@@ -73,35 +73,76 @@ def get_back_menu():
 def get_auto_publish_menu():
     return {
         "inline_keyboard": [
-            [{"text": "➕ Добавить автопубликацию", "callback_data": "add_auto_publish"}],
+            [{"text": "📅 Ежедневная", "callback_data": "add_daily_auto_publish"}],
+            [{"text": "📅 Одноразовая", "callback_data": "add_once_auto_publish"}],
+            [{"text": "📋 Мои автопубликации", "callback_data": "list_auto_publish"}],
             [{"text": "🔙 Назад в меню", "callback_data": "back_to_menu"}]
         ]
     }
 
 # ========== ФУНКЦИИ ДЛЯ АВТОПУБЛИКАЦИЙ ==========
+def format_auto_posts_list(user_id):
+    posts = auto_posts.get(user_id, [])
+    if not posts:
+        return "📭 У вас нет запланированных автопубликаций."
+    
+    text = "📋 <b>Ваши автопубликации:</b>\n\n"
+    for i, post in enumerate(posts, 1):
+        status = "✅" if post.get("active", True) else "⏸️"
+        if post["type"] == "daily":
+            time_info = f"⏰ {post['time']} (ежедневно)"
+        else:
+            try:
+                dt = datetime.strptime(post['time'], "%Y-%m-%d %H:%M")
+                time_info = f"⏰ {dt.strftime('%d.%m.%Y в %H:%M')} (одноразово)"
+            except:
+                time_info = f"⏰ {post['time']} (одноразово)"
+        text += f"{status} <b>{i}.</b> {time_info}\n"
+        text += f"📝 <i>{post['text'][:50]}{'...' if len(post['text']) > 50 else ''}</i>\n\n"
+    return text
+
 def check_and_send_auto_posts():
     while True:
         try:
-            current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+            now = datetime.now()
+            current_time = now.strftime("%H:%M")
+            current_datetime = now.strftime("%Y-%m-%d %H:%M")
+            
             for user_id, posts in auto_posts.items():
                 for post in posts:
-                    if post.get("active", True) and post.get("datetime") == current_time:
-                        result = send_telegram("sendMessage", {
-                            "chat_id": CHANNEL_ID,
-                            "text": post["text"],
-                            "parse_mode": "HTML"
-                        })
-                        if result.get("ok"):
-                            logger.info(f"✅ Автопубликация для {user_id} отправлена в {current_time}")
-                            post["active"] = False
-                            send_message(user_id,
-                                f"✅ <b>Автопубликация выполнена!</b>\n\n"
-                                f"⏰ Время: {current_time}\n"
-                                f"📝 Текст: {post['text'][:100]}",
-                                reply_markup=get_main_menu()
-                            )
-                        else:
-                            logger.error(f"❌ Ошибка автопубликации для {user_id}: {result}")
+                    if not post.get("active", True):
+                        continue
+                    
+                    if post["type"] == "daily":
+                        if post.get("time") == current_time:
+                            result = send_telegram("sendMessage", {
+                                "chat_id": CHANNEL_ID,
+                                "text": post["text"],
+                                "parse_mode": "HTML"
+                            })
+                            if result.get("ok"):
+                                logger.info(f"✅ Ежедневная автопубликация для {user_id} отправлена в {current_time}")
+                            else:
+                                logger.error(f"❌ Ошибка ежедневной автопубликации: {result}")
+                    
+                    elif post["type"] == "once":
+                        if post.get("time") == current_datetime:
+                            result = send_telegram("sendMessage", {
+                                "chat_id": CHANNEL_ID,
+                                "text": post["text"],
+                                "parse_mode": "HTML"
+                            })
+                            if result.get("ok"):
+                                logger.info(f"✅ Одноразовая автопубликация для {user_id} отправлена в {current_datetime}")
+                                post["active"] = False
+                                send_message(user_id,
+                                    f"✅ <b>Одноразовая автопубликация выполнена!</b>\n\n"
+                                    f"⏰ Время: {current_datetime}\n"
+                                    f"📝 Текст: {post['text'][:100]}",
+                                    reply_markup=get_main_menu()
+                                )
+                            else:
+                                logger.error(f"❌ Ошибка одноразовой автопубликации: {result}")
             time.sleep(30)
         except Exception as e:
             logger.error(f"Ошибка в потоке автопубликаций: {e}")
@@ -127,7 +168,7 @@ def handle_start(chat_id, user_id):
         f"• Публиковать посты в канал\n"
         f"• Автоматически заменять текст поста через заданное время\n"
         f"• Настраивать шаблон для автозамены\n"
-        f"• Одноразовые автопубликации в заданное время"
+        f"• Ежедневные и одноразовые автопубликации"
     )
     
     send_message(chat_id, text, reply_markup=get_main_menu())
@@ -150,10 +191,9 @@ def handle_callback_query(callback_data, chat_id, user_id, message_id):
             "• Укажите время в минутах до автозамены\n\n"
             "2️⃣ <b>Автопубликация</b>\n"
             "• Нажмите кнопку 'Автопубликация'\n"
-            "• Выберите 'Добавить автопубликацию'\n"
+            "• Выберите 'Ежедневная' или 'Одноразовая'\n"
             "• Отправьте текст поста\n"
-            "• Укажите дату и время в формате <code>ДД.ММ.ГГГГ ЧЧ:ММ</code>\n"
-            "• Пост будет опубликован один раз в это время\n\n"
+            "• Укажите время\n\n"
             "3️⃣ <b>Изменение шаблона автозамены</b>\n"
             "• Нажмите кнопку 'Изменить шаблон автозамены'\n"
             "• Отправьте новый текст шаблона"
@@ -181,18 +221,105 @@ def handle_callback_query(callback_data, chat_id, user_id, message_id):
     if callback_data == "auto_publish":
         user_sessions[user_id]["step"] = "auto_publish_menu"
         send_message(chat_id, 
-            "📅 <b>Управление автопубликациями</b>",
+            "📅 <b>Выберите тип автопубликации:</b>\n\n"
+            f"{format_auto_posts_list(user_id)}",
             reply_markup=get_auto_publish_menu()
         )
         return
     
-    if callback_data == "add_auto_publish":
+    if callback_data == "add_daily_auto_publish":
+        user_sessions[user_id]["auto_type"] = "daily"
         user_sessions[user_id]["step"] = "waiting_auto_post_text"
         send_message(chat_id, 
             "📝 <b>Напишите текст поста</b>\n"
-            "который будет опубликован один раз в указанное время.",
+            "который будет публиковаться <b>каждый день</b> в указанное время.",
             reply_markup=get_back_menu()
         )
+        return
+    
+    if callback_data == "add_once_auto_publish":
+        user_sessions[user_id]["auto_type"] = "once"
+        user_sessions[user_id]["step"] = "waiting_auto_post_text"
+        send_message(chat_id, 
+            "📝 <b>Напишите текст поста</b>\n"
+            "который будет опубликован <b>один раз</b> в указанную дату и время.",
+            reply_markup=get_back_menu()
+        )
+        return
+    
+    if callback_data == "list_auto_publish":
+        posts = auto_posts.get(user_id, [])
+        if not posts:
+            send_message(chat_id, "📭 У вас нет запланированных автопубликаций.", reply_markup=get_auto_publish_menu())
+            return
+        
+        keyboard = []
+        for i, post in enumerate(posts, 1):
+            status = "✅" if post.get("active", True) else "⏸️"
+            if post["type"] == "daily":
+                label = f"{status} {i}. Ежедневно в {post['time']}"
+            else:
+                try:
+                    dt = datetime.strptime(post['time'], "%Y-%m-%d %H:%M")
+                    label = f"{status} {i}. {dt.strftime('%d.%m %H:%M')} (разово)"
+                except:
+                    label = f"{status} {i}. {post['time']} (разово)"
+            keyboard.append([{"text": label, "callback_data": f"show_{i-1}"}])
+        keyboard.append([{"text": "🔙 Назад", "callback_data": "auto_publish"}])
+        
+        send_message(chat_id, 
+            "📋 <b>Ваши автопубликации (нажмите для удаления):</b>",
+            reply_markup={"inline_keyboard": keyboard}
+        )
+        return
+    
+    if callback_data.startswith("show_"):
+        try:
+            index = int(callback_data.split("_")[1])
+            posts = auto_posts.get(user_id, [])
+            if 0 <= index < len(posts):
+                post = posts[index]
+                if post["type"] == "daily":
+                    time_info = f"Ежедневно в {post['time']}"
+                else:
+                    try:
+                        dt = datetime.strptime(post['time'], "%Y-%m-%d %H:%M")
+                        time_info = f"Одноразово {dt.strftime('%d.%m.%Y в %H:%M')}"
+                    except:
+                        time_info = f"Одноразово {post['time']}"
+                
+                keyboard = [
+                    [{"text": "🗑️ Удалить", "callback_data": f"delete_{index}"}],
+                    [{"text": "🔙 Назад к списку", "callback_data": "list_auto_publish"}]
+                ]
+                
+                send_message(chat_id,
+                    f"📋 <b>Автопубликация #{index + 1}</b>\n\n"
+                    f"📌 Тип: {time_info}\n"
+                    f"📝 Текст: {post['text']}\n\n"
+                    f"Статус: {'✅ Активна' if post.get('active', True) else '⏸️ Выполнена'}",
+                    reply_markup={"inline_keyboard": keyboard}
+                )
+            else:
+                send_message(chat_id, "❌ Автопубликация не найдена.", reply_markup=get_auto_publish_menu())
+        except Exception as e:
+            send_message(chat_id, f"❌ Ошибка: {e}", reply_markup=get_auto_publish_menu())
+        return
+    
+    if callback_data.startswith("delete_"):
+        try:
+            index = int(callback_data.split("_")[1])
+            posts = auto_posts.get(user_id, [])
+            if 0 <= index < len(posts):
+                deleted = posts.pop(index)
+                send_message(chat_id, 
+                    f"✅ <b>Автопубликация удалена!</b>",
+                    reply_markup=get_auto_publish_menu()
+                )
+            else:
+                send_message(chat_id, "❌ Автопубликация не найдена.", reply_markup=get_auto_publish_menu())
+        except Exception as e:
+            send_message(chat_id, f"❌ Ошибка: {e}", reply_markup=get_auto_publish_menu())
         return
 
 def handle_text_message(chat_id, user_id, text):
@@ -256,17 +383,61 @@ def handle_text_message(chat_id, user_id, text):
     # ====== АВТОПУБЛИКАЦИЯ ======
     if step == "waiting_auto_post_text":
         user_sessions[user_id]["auto_post_text"] = text
-        user_sessions[user_id]["step"] = "waiting_auto_post_datetime"
+        auto_type = user_sessions[user_id].get("auto_type", "daily")
+        
+        if auto_type == "daily":
+            user_sessions[user_id]["step"] = "waiting_auto_post_time"
+            send_message(chat_id, 
+                "⏰ <b>Напишите время в формате ЧЧ:ММ</b>\n"
+                "Например: <code>09:00</code> — пост будет публиковаться каждый день в 9:00\n\n"
+                "⚠️ Время в 24-часовом формате!",
+                reply_markup=get_back_menu(),
+                parse_mode="HTML"
+            )
+        else:
+            user_sessions[user_id]["step"] = "waiting_auto_post_datetime"
+            send_message(chat_id, 
+                "⏰ <b>Напишите дату и время в формате:</b>\n"
+                "<code>ДД.ММ.ГГГГ ЧЧ:ММ</code>\n\n"
+                "📌 Например: <code>15.07.2026 09:00</code>\n"
+                "Пост будет опубликован <b>один раз</b> в это время.",
+                reply_markup=get_back_menu(),
+                parse_mode="HTML"
+            )
+        return
+    
+    if step == "waiting_auto_post_time":
+        if not re.match(r'^([0-1][0-9]|2[0-3]):[0-5][0-9]$', text):
+            send_message(chat_id, 
+                "❌ <b>Неверный формат!</b>\n\n"
+                "Используйте формат <code>ЧЧ:ММ</code>",
+                reply_markup=get_back_menu(),
+                parse_mode="HTML"
+            )
+            return
+        
+        post_text = user_sessions[user_id].get("auto_post_text", "")
+        auto_type = user_sessions[user_id].get("auto_type", "daily")
+        
+        if user_id not in auto_posts:
+            auto_posts[user_id] = []
+        
+        auto_posts[user_id].append({
+            "type": "daily",
+            "time": text,
+            "text": post_text,
+            "active": True
+        })
+        
         send_message(chat_id, 
-            "⏰ <b>Напишите дату и время в формате:</b>\n"
-            "<code>ДД.ММ.ГГГГ ЧЧ:ММ</code>\n\n"
-            "📌 Например:\n"
-            "<code>15.07.2026 09:00</code> — 15 июля 2026 в 9:00\n\n"
-            "⚠️ Время в 24-часовом формате!\n"
-            "📌 Пост будет опубликован один раз в это время.",
-            reply_markup=get_back_menu(),
+            f"✅ <b>Ежедневная автопубликация добавлена!</b>\n\n"
+            f"⏰ Время: <code>{text}</code>\n"
+            f"📝 Текст: {post_text[:200]}",
+            reply_markup=get_auto_publish_menu(),
             parse_mode="HTML"
         )
+        
+        user_sessions[user_id]["step"] = "auto_publish_menu"
         return
     
     if step == "waiting_auto_post_datetime":
@@ -292,12 +463,14 @@ def handle_text_message(chat_id, user_id, text):
                 return
             
             post_text = user_sessions[user_id].get("auto_post_text", "")
+            auto_type = user_sessions[user_id].get("auto_type", "once")
             
             if user_id not in auto_posts:
                 auto_posts[user_id] = []
             
             auto_posts[user_id].append({
-                "datetime": dt_str,
+                "type": "once",
+                "time": dt_str,
                 "text": post_text,
                 "active": True
             })
@@ -305,7 +478,7 @@ def handle_text_message(chat_id, user_id, text):
             display_dt = dt_obj.strftime("%d.%m.%Y в %H:%M")
             
             send_message(chat_id, 
-                f"✅ <b>Автопубликация добавлена!</b> ✅\n\n"
+                f"✅ <b>Одноразовая автопубликация добавлена!</b>\n\n"
                 f"⏰ Время: <code>{display_dt}</code>\n"
                 f"📝 Текст: {post_text[:200]}",
                 reply_markup=get_auto_publish_menu(),
